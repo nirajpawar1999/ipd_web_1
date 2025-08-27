@@ -1,14 +1,10 @@
-// IPD web port of your Python script
-// Keys: Buttons instead of keyboard. All on-device. No uploads.
+// Robust in-browser IPD with camera fixes + diagnostics
 
 const FIXED_DISTANCE_CM = 30.0;
 const DEFAULT_IRIS_CM = 1.17;
-
-// Iris landmark indices (refined mesh; same as your Python)
 const LEFT_IRIS = [468, 469, 470, 471];
 const RIGHT_IRIS = [473, 474, 475, 476];
 
-// Smoother (median with MAD-based outlier rejection)
 class RobustStream {
     constructor(win = 21, k = 3.5) { this.win = win; this.k = k; this.buf = []; }
     add(x) {
@@ -28,15 +24,13 @@ class RobustStream {
 }
 function median(arr) { const a = [...arr].sort((x, y) => x - y); const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; }
 function dist(a, b) { const dx = a[0] - b[0], dy = a[1] - b[1]; return Math.hypot(dx, dy); }
-
-// Minimal enclosing circle for 4 points (pairs + triplets); good enough for iris ring
 function circleFrom2(a, b) { return { c: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], r: dist(a, b) / 2 }; }
 function circleFrom3(a, b, c) {
     const A = b[0] - a[0], B = b[1] - a[1], C = c[0] - a[0], D = c[1] - a[1];
     const E = A * (a[0] + b[0]) + B * (a[1] + b[1]);
     const F = C * (a[0] + c[0]) + D * (a[1] + c[1]);
     const G = 2 * (A * (c[1] - b[1]) - B * (c[0] - b[0]));
-    if (Math.abs(G) < 1e-6) return null; // colinear
+    if (Math.abs(G) < 1e-6) return null;
     const cx = (D * E - B * F) / G, cy = (A * F - C * E) / G;
     const r = dist([cx, cy], a);
     return { c: [cx, cy], r };
@@ -44,17 +38,14 @@ function circleFrom3(a, b, c) {
 function minEnclosingCircle(pts) {
     let best = { c: [0, 0], r: Infinity };
     const n = pts.length;
-    // Try circles from 2 points
     for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
         const cand = circleFrom2(pts[i], pts[j]);
         if (pts.every(p => dist(p, cand.c) <= cand.r + 1e-3) && cand.r < best.r) best = cand;
     }
-    // Try circles from 3 points
     for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) {
         const cand = circleFrom3(pts[i], pts[j], pts[k]); if (!cand) continue;
         if (pts.every(p => dist(p, cand.c) <= cand.r + 1e-3) && cand.r < best.r) best = cand;
     }
-    // Fallback: centroid avg radius
     if (!isFinite(best.r)) {
         const cx = pts.reduce((s, p) => s + p[0], 0) / n, cy = pts.reduce((s, p) => s + p[1], 0) / n;
         const r = pts.reduce((s, p) => s + dist(p, [cx, cy]), 0) / n;
@@ -63,7 +54,8 @@ function minEnclosingCircle(pts) {
     return best;
 }
 
-// UI
+// UI refs
+const wrap = document.getElementById('wrap');
 const video = document.getElementById('video');
 const canvas = document.getElementById('overlay');
 const hud = document.getElementById('hud');
@@ -75,12 +67,16 @@ const btnCalibIris = document.getElementById('btnCalibIris');
 const btnReset = document.getElementById('btnReset');
 const fixedDistChk = document.getElementById('fixedDist');
 const selRes = document.getElementById('res');
+const selCam = document.getElementById('camera');
+const mirrorChk = document.getElementById('mirror');
+const debugEl = document.getElementById('debug');
 
 // State
 let faceLandmarker = null;
 let running = false;
-let f_px = parseFloat(localStorage.getItem('ipd_fpx') || 'NaN'); if (!isFinite(f_px)) f_px = null;
-let iris_cm = parseFloat(localStorage.getItem('ipd_iris_cm') || `${DEFAULT_IRIS_CM}`);
+let currentStream = null;
+let f_px = safeNum(localStorage.getItem('ipd_fpx'));
+let iris_cm = safeNum(localStorage.getItem('ipd_iris_cm'), DEFAULT_IRIS_CM);
 let useFixed = false;
 
 const streamIris = new RobustStream(21, 3.5);
@@ -97,34 +93,49 @@ function procFps() {
     const dt = (procT[procT.length - 1] - procT[0]) / 1000;
     return (procT.length - 1) / dt;
 }
+function format(num, digits = 2) { return (num == null || !isFinite(num)) ? 'N/A' : num.toFixed(digits); }
+function safeNum(v, fallback = null) { const n = parseFloat(v); return Number.isFinite(n) ? n : fallback; }
+function log(msg) { debugEl.textContent = String(msg ?? ''); }
 
-// Setup MediaPipe
-async function initFaceLandmarker() {
-    const { FaceLandmarker, FilesetResolver } = window;
-    const files = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-    );
-    faceLandmarker = await FaceLandmarker.createFromOptions(files, {
-        baseOptions: {
-            // Public model asset (float16). You can host locally if you prefer.
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-            delegate: 'GPU'
-        },
-        runningMode: 'VIDEO',
-        numFaces: 1,
-        minFaceDetectionConfidence: 0.5,
-        minFacePresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-        outputFaceBlendshapes: false
-    });
+function drawHUD(text, points = []) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#00d1ff';
+    points.forEach(p => { ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, Math.PI * 2); ctx.fill(); });
+    hud.textContent = text;
+}
+
+function resizeCanvasToVideo() {
+    const w = video.videoWidth || 1280;
+    const h = video.videoHeight || 720;
+    canvas.width = w;
+    canvas.height = h;
+}
+
+// Camera handling
+async function listCameras() {
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        selCam.innerHTML = '';
+        cams.forEach((d, i) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            opt.textContent = d.label || `Camera ${i + 1}`;
+            selCam.appendChild(opt);
+        });
+        if (!cams.length) log('No cameras found.');
+    } catch (e) { log('enumerateDevices failed: ' + e.message); }
 }
 
 function getConstraints() {
     const [w, h] = selRes.value.split('x').map(Number);
+    const deviceId = selCam.value || undefined;
+    // Prefer front camera on mobile unless a device is chosen
+    const facingMode = deviceId ? undefined : 'user';
     return {
         audio: false,
         video: {
-            facingMode: 'user',
+            ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode }),
             width: { ideal: w },
             height: { ideal: h },
             frameRate: { ideal: 30, max: 30 }
@@ -132,45 +143,83 @@ function getConstraints() {
     };
 }
 
-async function enableCamera() {
-    const stream = await navigator.mediaDevices.getUserMedia(getConstraints());
-    video.srcObject = stream;
-    await video.play();
-    resizeToVideo();
+async function stopCurrentStream() {
+    if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+    }
 }
 
-function resizeToVideo() {
-    const w = video.videoWidth || 1280;
-    const h = video.videoHeight || 720;
-    // letterbox to fit viewport while preserving aspect
-    const vw = Math.min(window.innerWidth, w);
-    const vh = Math.min(window.innerHeight - 150, h);
-    video.width = canvas.width = w;
-    video.height = canvas.height = h;
-    // scale via CSS by aspect center—already handled by absolute centering
+async function enableCamera() {
+    try {
+        await stopCurrentStream();
+        // First, request any video to unlock device labels (iOS/Chrome privacy)
+        if (!window._labelsUnlocked) {
+            const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            tmp.getTracks().forEach(t => t.stop());
+            window._labelsUnlocked = true;
+            await listCameras();
+        }
+        // Then request with our constraints
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia(getConstraints());
+        } catch (e) {
+            // Fallback: try generic video if specific constraint fails
+            log('Specific constraints failed, retrying generic. ' + e.message);
+            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+        currentStream = stream;
+        video.srcObject = stream;
+
+        // Wait for metadata before playing/sizing (fixes black screen)
+        await new Promise(res => { video.onloadedmetadata = () => res(); });
+        await video.play();
+
+        resizeCanvasToVideo();
+        drawHUD('Camera ready. Click "Calibrate f_px" (hold ~30cm).');
+        btnCalibF.disabled = false;
+        btnCalibIris.disabled = false;
+        btnReset.disabled = false;
+    } catch (err) {
+        log('getUserMedia error: ' + err.message + '\nDid you allow camera access?');
+        throw err;
+    }
+}
+
+// MediaPipe
+async function initFaceLandmarker() {
+    try {
+        const { FaceLandmarker, FilesetResolver } = window;
+        const files = await FilesetResolver.forVisionTasks(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+        );
+        faceLandmarker = await FaceLandmarker.createFromOptions(files, {
+            baseOptions: {
+                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                delegate: 'GPU'
+            },
+            runningMode: 'VIDEO',
+            numFaces: 1,
+            minFaceDetectionConfidence: 0.5,
+            minFacePresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+            outputFaceBlendshapes: false
+        });
+    } catch (e) {
+        log('FaceLandmarker init failed: ' + e.message);
+        throw e;
+    }
 }
 
 function landmarksToPts(landmarks, idxs, w, h) {
     return idxs.map(i => [landmarks[i].x * w, landmarks[i].y * h]);
 }
-
 function irisCenterDiamPx(landmarks, idxs, w, h) {
     const pts = landmarksToPts(landmarks, idxs, w, h);
     const { c, r } = minEnclosingCircle(pts);
     return { cx: c[0], cy: c[1], d: 2 * r };
 }
-
-function drawHUD(text, points = []) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // points (iris centers)
-    ctx.fillStyle = '#00d1ff';
-    points.forEach(p => {
-        ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, Math.PI * 2); ctx.fill();
-    });
-    hud.textContent = text;
-}
-
-function format(num, digits = 2) { return (num == null || !isFinite(num)) ? 'N/A' : num.toFixed(digits); }
 
 async function mainLoop() {
     if (!running || !faceLandmarker) return;
@@ -222,10 +271,10 @@ async function mainLoop() {
     requestAnimationFrame(mainLoop);
 }
 
-// Calibration routines
+// Calibrations
 async function calibrateFpx() {
     if (!faceLandmarker) return;
-    const tEnd = performance.now() + 3000; // 3s
+    const tEnd = performance.now() + 3000;
     const samples = [];
     while (performance.now() < tEnd && samples.length < 20) {
         const w = video.videoWidth, h = video.videoHeight;
@@ -254,7 +303,7 @@ async function calibrateFpx() {
 
 async function calibrateIris() {
     if (!faceLandmarker || !f_px) { drawHUD('Calibrate f_px first.'); return; }
-    const tEnd = performance.now() + 2000; // 2s
+    const tEnd = performance.now() + 2000;
     const samples = [];
     while (performance.now() < tEnd && samples.length < 20) {
         const w = video.videoWidth, h = video.videoHeight;
@@ -287,27 +336,49 @@ function resetAll() {
     localStorage.removeItem('ipd_fpx');
     localStorage.setItem('ipd_iris_cm', String(iris_cm));
     streamIris.clear(); streamIPD.clear();
+    drawHUD('Reset done. Recalibrate f_px.');
 }
 
-// Event handlers
+// Events
 btnStart.onclick = async () => {
-    btnStart.disabled = true;
-    await initFaceLandmarker();
-    await enableCamera();
-    running = true;
-    requestAnimationFrame(mainLoop);
+    try {
+        btnStart.disabled = true;
+        log('Starting…');
+        await initFaceLandmarker();
+        await enableCamera();
+        running = true;
+        requestAnimationFrame(mainLoop);
+        log(''); // clear
+    } catch (e) {
+        btnStart.disabled = false;
+    }
 };
 btnCalibF.onclick = calibrateFpx;
 btnCalibIris.onclick = calibrateIris;
 btnReset.onclick = resetAll;
 fixedDistChk.onchange = e => useFixed = e.target.checked;
+
 selRes.onchange = async () => {
     if (video.srcObject) {
         running = false;
-        const tracks = video.srcObject.getTracks(); tracks.forEach(t => t.stop());
         await enableCamera();
         running = true;
         requestAnimationFrame(mainLoop);
     }
 };
-window.addEventListener('resize', resizeToVideo);
+selCam.onchange = async () => {
+    if (video.srcObject) {
+        running = false;
+        await enableCamera();
+        running = true;
+        requestAnimationFrame(mainLoop);
+    }
+};
+mirrorChk.onchange = () => {
+    wrap.classList.toggle('mirror', mirrorChk.checked);
+};
+
+window.addEventListener('resize', resizeCanvasToVideo);
+
+// Populate camera list once allowed
+navigator.mediaDevices?.enumerateDevices && listCameras();
