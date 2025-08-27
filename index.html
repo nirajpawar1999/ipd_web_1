@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>IPD (Browser)</title>
+    <style>
+        :root {
+            color-scheme: dark light;
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, Arial, sans-serif;
+            background: #0b0b0c;
+            color: #eee;
+        }
+
+        header {
+            padding: 10px 14px;
+            font-weight: 600;
+        }
+
+        .wrap {
+            position: relative;
+            width: 100vw;
+            height: calc(100vh - 150px);
+            overflow: hidden;
+        }
+
+        #video, #overlay {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%,-50%);
+        }
+
+        #hud {
+            position: absolute;
+            left: 10px;
+            top: 10px;
+            padding: 8px 10px;
+            line-height: 1.4;
+            background: rgba(0,0,0,.45);
+            border-radius: 10px;
+            font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+            max-width: min(92vw,520px);
+            white-space: pre-line;
+        }
+
+        #warn {
+            color: #ffdd57;
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding: 10px 14px;
+            align-items: center;
+            background: #101114;
+            border-top: 1px solid #222;
+        }
+
+        button, select, label {
+            font: 14px system-ui, Arial, sans-serif;
+        }
+
+        button {
+            padding: 8px 12px;
+            border-radius: 10px;
+            border: 1px solid #333;
+            background: #1b1d22;
+            color: #eee;
+            cursor: pointer;
+        }
+
+            button:hover {
+                background: #23262c;
+            }
+
+        .small {
+            font-size: 12px;
+            opacity: .8
+        }
+    </style>
+    <!-- MediaPipe Tasks (Web) -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <header>IPD (on-device, client-side)</header>
+    <div class="wrap">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlay"></canvas>
+        <div id="hud"></div>
+    </div>
+    <div class="controls">
+        <button id="btnStart">Enable Camera</button>
+        <button id="btnCalibF">Calibrate Camera f<sub>px</sub></button>
+        <button id="btnCalibIris">Calibrate Iris Size</button>
+        <button id="btnReset">Reset</button>
+        <label><input type="checkbox" id="fixedDist"> Use fixed 30 cm</label>
+        <label class="small">
+            Res:
+            <select id="res">
+                <option value="1280x720">1280×720</option>
+                <option value="1920x1080">1920×1080</option>
+                <option value="960x540">960×540</option>
+                <option value="640x480">640×480</option>
+            </select>
+        </label>
+    </div>
+    <script type="module" src="./main.js"></script>
+</body>
+</html>
