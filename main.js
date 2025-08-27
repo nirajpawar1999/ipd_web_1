@@ -1,4 +1,8 @@
+
 // Robust in-browser IPD with camera fixes + diagnostics
+import vision from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+const { FaceLandmarker, FilesetResolver } = vision;
+
 
 const FIXED_DISTANCE_CM = 30.0;
 const DEFAULT_IRIS_CM = 1.17;
@@ -190,16 +194,16 @@ async function enableCamera() {
 // MediaPipe
 async function initFaceLandmarker() {
     try {
-        const { FaceLandmarker, FilesetResolver } = window;
         const files = await FilesetResolver.forVisionTasks(
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
         );
         faceLandmarker = await FaceLandmarker.createFromOptions(files, {
             baseOptions: {
-                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-                delegate: 'GPU'
+                modelAssetPath:
+                    "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                delegate: "GPU"
             },
-            runningMode: 'VIDEO',
+            runningMode: "VIDEO",
             numFaces: 1,
             minFaceDetectionConfidence: 0.5,
             minFacePresenceConfidence: 0.5,
@@ -207,10 +211,11 @@ async function initFaceLandmarker() {
             outputFaceBlendshapes: false
         });
     } catch (e) {
-        log('FaceLandmarker init failed: ' + e.message);
+        log("FaceLandmarker init failed: " + e.message);
         throw e;
     }
 }
+
 
 function landmarksToPts(landmarks, idxs, w, h) {
     return idxs.map(i => [landmarks[i].x * w, landmarks[i].y * h]);
